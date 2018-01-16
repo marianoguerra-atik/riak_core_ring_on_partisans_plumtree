@@ -1,0 +1,22 @@
+{"1.1.0",
+[{<<"acceptor_pool">>,{pkg,<<"acceptor_pool">>,<<"1.0.0-rc.0">>},1},
+ {<<"cuttlefish">>,{pkg,<<"cuttlefish">>,<<"2.0.12">>},0},
+ {<<"getopt">>,{pkg,<<"getopt">>,<<"0.8.2">>},1},
+ {<<"goldrush">>,{pkg,<<"goldrush">>,<<"0.1.9">>},1},
+ {<<"lager">>,{pkg,<<"lager">>,<<"3.5.2">>},0},
+ {<<"partisan">>,{pkg,<<"partisan">>,<<"1.4.1">>},0},
+ {<<"rand_compat">>,{pkg,<<"rand_compat">>,<<"0.0.3">>},1},
+ {<<"time_compat">>,{pkg,<<"time_compat">>,<<"0.0.1">>},1},
+ {<<"types">>,{pkg,<<"types">>,<<"0.1.7">>},1}]}.
+[
+{pkg_hash,[
+ {<<"acceptor_pool">>, <<"679D741DF87FC13599B1AEF2DF8F78F1F880449A6BEFAB7C44FB6FAE0E92A2DE">>},
+ {<<"cuttlefish">>, <<"1441A12BCE207F7FC796A4DA50D47080D21E83E15309AD6496DE27840A54D5FC">>},
+ {<<"getopt">>, <<"B17556DB683000BA50370B16C0619DF1337E7AF7ECBF7D64FBF8D1D6BCE3109B">>},
+ {<<"goldrush">>, <<"F06E5D5F1277DA5C413E84D5A2924174182FB108DABB39D5EC548B27424CD106">>},
+ {<<"lager">>, <<"614A8C8F67BF99B69EB264EA22121AD25511C055AAEC09B086773D5108C6767F">>},
+ {<<"partisan">>, <<"6CA6691F35A1AADE981FCE2895BA44D252989C6808EAA6CC2AD209452B2C900F">>},
+ {<<"rand_compat">>, <<"011646BC1F0B0C432FE101B816F25B9BBB74A085713CEE1DAFD2D62E9415EAD3">>},
+ {<<"time_compat">>, <<"23FE0AD1FDF3B5B88821B2D04B4B5E865BF587AE66056D671FE0F53514ED8139">>},
+ {<<"types">>, <<"7542CEE48E664521BCF0311EEC3B433E70D80DCDF34DC18D8F0D39921AFE6831">>}]}
+].

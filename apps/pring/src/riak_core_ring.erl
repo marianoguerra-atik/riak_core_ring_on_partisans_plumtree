@@ -34,8 +34,7 @@
          diff_nodes/2,
          equal_rings/2,
          fresh/0,
-         fresh/1,
-         fresh/2,
+         fresh/3,
          get_meta/2,
          get_buckets/1,
          index_owner/2,
@@ -55,11 +54,11 @@
          remove_meta/2]).
 
 -export([cluster_name/1,
-         upgrade/1,
          downgrade/2,
          set_tainted/1,
          check_tainted/2,
          nearly_equal/2,
+         descends/2,
          claimant/1,
          member_status/2,
          pretty_print/2,
@@ -99,8 +98,7 @@
          completed_next_owners/2,
          all_next_owners/1,
          change_owners/2,
-         handoff_complete/3,
-         ring_ready/0,
+         handoff_complete/4,
          ring_ready/1,
          ring_ready_info/1,
          ring_changed/2,
@@ -117,7 +115,7 @@
          schedule_resize_transfer/3,
          awaiting_resize_transfer/3,
          resize_transfer_status/4,
-         resize_transfer_complete/4,
+         resize_transfer_complete/5,
          complete_resize_transfers/3,
          reschedule_resize_transfers/3,
          is_resizing/1,
@@ -132,7 +130,7 @@
          future_owner/2,
          future_num_partitions/1,
          vnode_type/2,
-         deletion_complete/3]).
+         deletion_complete/4]).
 
 -export_type([riak_core_ring/0, ring_size/0, partition_id/0]).
 
@@ -197,37 +195,6 @@
 %% Public API
 %% ===================================================================
 
-%% @doc Upgrade old ring structures to the latest format.
-upgrade(Old=?CHSTATE{}) ->
-    Old;
-upgrade(Old=#chstate{}) ->
-    #chstate{nodename=Node,
-             vclock=VC,
-             chring=Ring,
-             meta=Meta} = Old,
-    New1 = ?CHSTATE{nodename=Node,
-                    vclock=VC,
-                    chring=Ring,
-                    meta=Meta,
-                    clustername=undefined,
-                    next=[],
-                    members=[],
-                    claimant=undefined,
-                    seen=[],
-                    rvsn=VC},
-    MemberVC = vclock:increment(Node, vclock:fresh()),
-    Members = [{Member, {valid, MemberVC, []}}
-               || Member <- chash:members(Ring)],
-    New2 = New1?CHSTATE{members=Members},
-    case node() of
-        Node ->
-            GVsn = riak_core_gossip:gossip_version(),
-            update_member_meta(Node, New2, Node,
-                               gossip_vsn, GVsn, same_vclock);
-        _ ->
-            New2
-    end.
-
 %% @doc Downgrade the latest ring structure to a specified version.
 downgrade(1,?CHSTATE{nodename=Node,
                      vclock=VC,
@@ -244,16 +211,12 @@ set_tainted(Ring) ->
     update_meta(riak_core_ring_tainted, true, Ring).
 
 check_tainted(Ring=?CHSTATE{}, Msg) ->
-    Exit = application:get_env(riak_core, exit_when_tainted, false),
-    case {get_meta(riak_core_ring_tainted, Ring), Exit} of
-        {{ok, true}, true} ->
-            riak_core:stop(Msg),
-            ok;
-        {{ok, true}, false} ->
+    case get_meta(riak_core_ring_tainted, Ring) of
+        R={ok, true} ->
             lager:error(Msg),
-            ok;
-        _ ->
-            ok
+            R;
+        R ->
+            R
     end.
 
 %% @doc Verify that the two rings are identical expect that metadata can
@@ -262,11 +225,15 @@ check_tainted(Ring=?CHSTATE{}, Msg) ->
 %%      fix-up logic may make to a ring.
 -spec nearly_equal(chstate(), chstate()) -> boolean().
 nearly_equal(RingA, RingB) ->
-    TestVC = vclock:descends(RingB?CHSTATE.vclock, RingA?CHSTATE.vclock),
+    TestVC = descends(RingA, RingB),
     RingA2 = RingA?CHSTATE{vclock=undefined, meta=undefined},
     RingB2 = RingB?CHSTATE{vclock=undefined, meta=undefined},
     TestRing = (RingA2 =:= RingB2),
     TestVC and TestRing.
+
+-spec descends(chstate(), chstate()) -> boolean().
+descends(RingA, RingB) ->
+    vclock:descends(RingB?CHSTATE.vclock, RingA?CHSTATE.vclock).
 
 %% @doc Determine if a given Index/Node `IdxNode' combination is a
 %%      primary.
@@ -332,20 +299,13 @@ equal_rings(_A=?CHSTATE{chring=RA,meta=MA},_B=?CHSTATE{chring=RB,meta=MB}) ->
 -spec fresh() -> chstate().
 fresh() ->
     % use this when starting a new cluster via this node
-    fresh(node()).
-
-%% @doc Equivalent to fresh/0 but allows specification of the local node name.
-%%      Called by fresh/0, and otherwise only intended for testing purposes.
--spec fresh(NodeName :: term()) -> chstate().
-fresh(NodeName) ->
-    fresh(application:get_env(riak_core, ring_creation_size, undefined), NodeName).
+    fresh(64, node(), 2).
 
 %% @doc Equivalent to fresh/1 but allows specification of the ring size.
 %%      Called by fresh/1, and otherwise only intended for testing purposes.
--spec fresh(ring_size(), NodeName :: term()) -> chstate().
-fresh(RingSize, NodeName) ->
+-spec fresh(ring_size(), NodeName :: term(), non_neg_integer()) -> chstate().
+fresh(RingSize, NodeName, GossipVsn) ->
     VClock=vclock:increment(NodeName, vclock:fresh()),
-    GossipVsn = riak_core_gossip:gossip_version(),
     ?CHSTATE{nodename=NodeName,
              clustername={NodeName, erlang:now()},
              members=[{NodeName, {valid, VClock, [{gossip_vsn, GossipVsn}]}}],
@@ -1030,14 +990,15 @@ resize_transfer_status(State, Source, Target, Mod) ->
 -spec resize_transfer_complete(chstate(),
                                {integer(),term()},
                                {integer(),term()},
-                               atom()) -> chstate().
-resize_transfer_complete(State, {SrcIdx, _}=Source, Target, Mod) ->
+                               atom(),
+                               term()) -> chstate().
+resize_transfer_complete(State, {SrcIdx, _}=Source, Target, Mod, VNodeModules) ->
     ResizeTransfers = resize_transfers(State, Source),
     Transfer = lists:keyfind(Target, 1, ResizeTransfers),
     case Transfer of
         {Target, Mods, Status} ->
             VNodeMods =
-                ordsets:from_list([VMod || {_, VMod} <- riak_core:vnode_modules()]),
+                ordsets:from_list([VMod || {_, VMod} <- VNodeModules]),
             Mods2 = ordsets:add_element(Mod, Mods),
             Status2 = case {Status, Mods2} of
                           {complete, _} -> complete;
@@ -1052,7 +1013,7 @@ resize_transfer_complete(State, {SrcIdx, _}=Source, Target, Mod) ->
                                     end, ResizeTransfers2),
             case AllComplete of
                 true ->
-                    transfer_complete(State1, SrcIdx, Mod);
+                    transfer_complete(State1, SrcIdx, Mod, VNodeModules);
                 false -> State1
             end;
         _ -> State
@@ -1091,9 +1052,9 @@ complete_resize_transfers(State, Source, Mod) ->
     [Target || {Target, Mods, Status} <- resize_transfers(State, Source),
                Status =:= complete orelse ordsets:is_element(Mod, Mods)].
 
--spec deletion_complete(chstate(), integer(), atom()) -> chstate().
-deletion_complete(State, Idx, Mod) ->
-    transfer_complete(State, Idx, Mod).
+-spec deletion_complete(chstate(), integer(), atom(), term()) -> chstate().
+deletion_complete(State, Idx, Mod, VNodeModules) ->
+    transfer_complete(State, Idx, Mod, VNodeModules).
 
 -spec resize_transfers(chstate(), {integer(), term()}) ->
                               [resize_transfer()].
@@ -1214,10 +1175,6 @@ ring_ready(State0) ->
     Ready = lists:all(fun(X) -> X =:= true end, R),
     Ready.
 
-ring_ready() ->
-    {ok, Ring} = riak_core_ring_manager:get_raw_ring(),
-    ring_ready(Ring).
-
 ring_ready_info(State0) ->
     Owner = owner_node(State0),
     State = update_seen(Owner, State0),
@@ -1241,9 +1198,9 @@ ring_ready_info(State0) ->
 
 %% @doc Marks a pending transfer as completed.
 -spec handoff_complete(State :: chstate(), Idx :: integer(),
-                       Mod :: module()) -> chstate().
-handoff_complete(State, Idx, Mod) ->
-    transfer_complete(State, Idx, Mod).
+                       Mod :: module(), term()) -> chstate().
+handoff_complete(State, Idx, Mod, VNodeModules) ->
+    transfer_complete(State, Idx, Mod, VNodeModules).
 
 ring_changed(Node, State) ->
     check_tainted(State,
@@ -1302,7 +1259,7 @@ pretty_print(Ring, Opts) ->
     OptLegend = lists:member(legend, Opts),
     Out = proplists:get_value(out, Opts, standard_io),
     TargetN = proplists:get_value(target_n, Opts,
-                                  application:get_env(riak_core, target_n_val, undefined)),
+                                  application:get_env(riak_core, target_n_val, 4)),
 
     Owners = riak_core_ring:all_members(Ring),
     Indices = riak_core_ring:all_owners(Ring),
@@ -1701,11 +1658,11 @@ merge_status(_, _) ->
     invalid.
 
 %% @private
-transfer_complete(CState=?CHSTATE{next=Next, vclock=VClock}, Idx, Mod) ->
+transfer_complete(CState=?CHSTATE{next=Next, vclock=VClock}, Idx, Mod, VNodeModules) ->
     {Idx, Owner, NextOwner, Transfers, Status} = lists:keyfind(Idx, 1, Next),
     Transfers2 = ordsets:add_element(Mod, Transfers),
     VNodeMods =
-        ordsets:from_list([VMod || {_, VMod} <- riak_core:vnode_modules()]),
+        ordsets:from_list([VMod || {_, VMod} <- VNodeModules]),
     Status2 = case {Status, Transfers2} of
                   {complete, _} ->
                       complete;
@@ -1795,7 +1752,7 @@ filtered_seen(State=?CHSTATE{seen=Seen}) ->
 sequence_test() ->
     I1 = 365375409332725729550921208179070754913983135744,
     I2 = 730750818665451459101842416358141509827966271488,
-    A = fresh(4,a),
+    A = fresh(4,a,2),
     B1 = A?CHSTATE{nodename=b},
     B2 = transfer_node(I1, b, B1),
     ?assertEqual(B2, transfer_node(I1, b, B2)),
@@ -1813,11 +1770,11 @@ sequence_test() ->
 
 param_fresh_test() ->
     application:set_env(riak_core,ring_creation_size,4),
-    ?assert(equal_cstate(fresh(), fresh(4, node()))),
+    ?assert(equal_cstate(fresh(), fresh(4, node(),2))),
     ?assertEqual(owner_node(fresh()),node()).
 
 index_test() ->
-    Ring0 = fresh(2,node()),
+    Ring0 = fresh(2,node(),2),
     Ring1 = transfer_node(0,x,Ring0),
     ?assertEqual(0,random_other_index(Ring0)),
     ?assertEqual(0,random_other_index(Ring1)),
@@ -1826,12 +1783,12 @@ index_test() ->
     ?assertEqual(lists:sort([x,node()]),lists:sort(diff_nodes(Ring0,Ring1))).
 
 reconcile_test() ->
-    Ring0 = fresh(2,node()),
+    Ring0 = fresh(2,node(),2),
     Ring1 = transfer_node(0,x,Ring0),
     %% Only members and seen should have changed
-    {new_ring, Ring2} = reconcile(fresh(2,someone_else),Ring1),
+    {new_ring, Ring2} = reconcile(fresh(2,someone_else,2),Ring1),
     ?assertNot(equal_cstate(Ring1, Ring2, false)),
-    RingB0 = fresh(2,node()),
+    RingB0 = fresh(2,node(),2),
     RingB1 = transfer_node(0,x,RingB0),
     RingB2 = RingB1?CHSTATE{nodename=b},
     ?assertMatch({no_change,_},reconcile(Ring1,RingB2)),
@@ -1839,7 +1796,7 @@ reconcile_test() ->
     ?assert(equal_cstate(RingB2, RingB3)).
 
 metadata_inequality_test() ->
-    Ring0 = fresh(2,node()),
+    Ring0 = fresh(2,node(),2),
     Ring1 = update_meta(key,val,Ring0),
     ?assertNot(equal_rings(Ring0,Ring1)),
     ?assertEqual(Ring1?CHSTATE.meta,
@@ -1856,7 +1813,7 @@ metadata_inequality_test() ->
                                        {'node1',Ring1?CHSTATE.meta})})).
 
 metadata_remove_test() ->
-    Ring0 = fresh(2, node()),
+    Ring0 = fresh(2, node(),2),
     ?assert(equal_rings(Ring0, remove_meta(key, Ring0))),
     Ring1 = update_meta(key,val,Ring0),
     timer:sleep(1001), % ensure that lastmod is at least one second later
@@ -1866,13 +1823,13 @@ metadata_remove_test() ->
     ?assertEqual(undefined, get_meta(key, ?CHSTATE{meta=merge_meta({'node2',Ring2?CHSTATE.meta}, {'node1',Ring1?CHSTATE.meta})})).
 
 rename_test() ->
-    Ring0 = fresh(2, node()),
+    Ring0 = fresh(2, node(),2),
     Ring = rename_node(Ring0, node(), 'new@new'),
     ?assertEqual('new@new', owner_node(Ring)),
     ?assertEqual(['new@new'], all_members(Ring)).
 
 exclusion_test() ->
-    Ring0 = fresh(2, node()),
+    Ring0 = fresh(2, node(), 2),
     Ring1 = transfer_node(0,x,Ring0),
     ?assertEqual(0, random_other_index(Ring1,[730750818665451459101842416358141509827966271488])),
     ?assertEqual(no_indices, random_other_index(Ring1, [0])),
@@ -1880,14 +1837,14 @@ exclusion_test() ->
                  preflist(<<1:160/integer>>, Ring1)).
 
 random_other_node_test() ->
-    Ring0 = fresh(2, node()),
+    Ring0 = fresh(2, node(), 2),
     ?assertEqual(no_node, random_other_node(Ring0)),
     Ring1 = add_member(node(), Ring0, 'new@new'),
     Ring2 = transfer_node(0, 'new@new', Ring1),
     ?assertEqual('new@new', random_other_node(Ring2)).
 
 membership_test() ->
-    RingA1 = fresh(nodeA),
+    RingA1 = fresh(nodeA, node(), 2),
     ?assertEqual([nodeA], all_members(RingA1)),
 
     RingA2 = add_member(nodeA, RingA1, nodeB),
@@ -1913,7 +1870,7 @@ membership_test() ->
 
     Priority = [{invalid,1}, {down,2}, {joining,3}, {valid,4}, {exiting,5},
                 {leaving,6}],
-    RingX1 = fresh(nodeA),
+    RingX1 = fresh(nodeA, node(), 2),
     RingX2 = add_member(nodeA, RingX1, nodeB),
     RingX3 = add_member(nodeA, RingX2, nodeC),
     ?assertEqual(joining, member_status(RingX3, nodeC)),
@@ -1947,7 +1904,7 @@ membership_test() ->
     ok.
 
 ring_version_test() ->
-    Ring1 = fresh(nodeA),
+    Ring1 = fresh(nodeA, node(), 2),
     Ring2 = add_member(node(), Ring1, nodeA),
     Ring3 = add_member(node(), Ring2, nodeB),
     ?assertEqual(nodeA, claimant(Ring3)),
@@ -2008,7 +1965,7 @@ reconcile_next_test() ->
     ?assertEqual(Next6, reconcile_divergent_next(Next4, Next5)).
 
 resize_test() ->
-    Ring0 = fresh(4, a),
+    Ring0 = fresh(4, a, 2),
     Ring1 = resize(Ring0, 8),
     Ring2 = resize(Ring0, 2),
     ?assertEqual(8, num_partitions(Ring1)),
@@ -2039,7 +1996,7 @@ resize_xfer_test_() ->
      fun test_resize_xfers/0}.
 
 test_resize_xfers() ->
-    Ring0 = riak_core_ring:fresh(4, a),
+    Ring0 = riak_core_ring:fresh(4, a, 2),
     Ring1 = set_pending_resize(resize(Ring0, 8), Ring0),
     Source1 = {0, a},
     Target1 = {730750818665451459101842416358141509827966271488, a},
@@ -2052,16 +2009,20 @@ test_resize_xfers() ->
     ?assertEqual(undefined, resize_transfer_status(Ring2, Target1, Source1, fake_vnode)),
 
     Ring3 = schedule_resize_transfer(Ring2, Source1, TargetIdx2),
+    % TODO: pass VNodeModules as last arg
     Ring4 = resize_transfer_complete(Ring3, Source1, Target1, fake_vnode),
     ?assertEqual({TargetIdx2, a}, awaiting_resize_transfer(Ring4, Source1, fake_vnode)),
     ?assertEqual(awaiting, resize_transfer_status(Ring4, Source1, {TargetIdx2, a}, fake_vnode)),
     ?assertEqual(complete, resize_transfer_status(Ring4, Source1, Target1, fake_vnode)),
 
+    % TODO: pass VNodeModules as last arg
     Ring5 = resize_transfer_complete(Ring4, Source1, {TargetIdx2, a}, fake_vnode),
     {_, '$resize', Status1} = next_owner(Ring5, 0, fake_vnode),
     ?assertEqual(complete, Status1),
 
+    % TODO: pass VNodeModules as last arg
     Ring6 = resize_transfer_complete(Ring5, Source1, {TargetIdx2, a}, other_vnode),
+    % TODO: pass VNodeModules as last arg
     Ring7 = resize_transfer_complete(Ring6, Source1, Target1, other_vnode),
     {_, '$resize', Status2} = next_owner(Ring7, 0, fake_vnode),
     ?assertEqual(complete, Status2),

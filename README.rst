@@ -3,6 +3,35 @@ pring
 
 A partisan application
 
+On all nodes::
+
+    pring:print_ring().
+    pring:all_members().
+    pring:broadcast_ring().
+
+On Node 1::
+
+    {ok, Idxs} = pring_broadcast_handler:ring_apply(fun (Ring) ->
+        Idxs = riak_core_ring:my_indices(Ring),
+        {ok, Ring, Idxs}
+    end).
+
+    [Idx1, Idx2 | _] = Idxs.
+
+    pring:transfer_node(Idx1, 'pring2@127.0.0.1').
+
+    pring:broadcast_ring().
+
+    % on all nodes
+    pring:print_ring().
+
+    pring:transfer_node(Idx2, 'pring3@127.0.0.1').
+
+    pring:broadcast_ring().
+
+    % on all nodes
+    pring:print_ring().
+
 Build
 -----
 

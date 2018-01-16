@@ -15,6 +15,10 @@
 
 -define(SERVER, ?MODULE).
 
+-define(CHILD(I, Type, Timeout),
+        {I, {I, start_link, []}, permanent, Timeout, Type, [I]}).
+-define(CHILD(I, Type), ?CHILD(I, Type, 5000)).
+
 %%====================================================================
 %% API functions
 %%====================================================================
@@ -28,10 +32,11 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    Handler = { pring_handler,
-                   { pring_handler, start_link, []},
-                   permanent, 5000, worker, [pring_handler]},
-    {ok, { {one_for_all, 0, 1}, [Handler]} }.
+    Children = lists:flatten([?CHILD(pring_broadcast_handler, worker),
+                              ?CHILD(pring_handler, worker)]),
+
+    RestartStrategy = {one_for_one, 10, 10},
+    {ok, {RestartStrategy, Children}}.
 
 %%====================================================================
 %% Internal functions
