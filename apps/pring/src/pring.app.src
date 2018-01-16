@@ -1,0 +1,15 @@
+%% -*- erlang -*-
+{application, pring,
+ [
+  {description, "A Partisan Application"},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  sasl,
+                  partisan
+                 ]},
+  {mod, { pring_app, []}},
+  {env, []}
+ ]}.
