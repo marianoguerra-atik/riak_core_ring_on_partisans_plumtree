@@ -32,6 +32,8 @@ On Node 1::
     % on all nodes
     pring:print_ring().
 
+demo screencast: https://asciinema.org/a/aYwww1dlkI9vxjMIykjG9uuuI
+
 Build
 -----
 
